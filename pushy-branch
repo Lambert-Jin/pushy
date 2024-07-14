@@ -1,0 +1,71 @@
+#!/bin/dash
+
+pushy_dir=".pushy"
+head_file="$pushy_dir/HEAD"
+refs_dir="$pushy_dir/refs/heads"
+
+# Extract the current branch name from the HEAD file
+current_branch=$(sed 's/ref: refs\/heads\///' < "$head_file")
+current_branch_ref="$refs_dir/$current_branch"
+
+# Check if the pushy repository directory exists
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+# Verify that the HEAD file contains data
+if [ ! -s "$head_file" ]; then
+    echo "pushy-branch: error: this command can not be run until after the first commit"
+    exit 1
+fi
+
+# Use a case statement to handle different command-line argument scenarios
+case $# in
+    0)
+        # If no arguments are given, list all branches
+        for file in "$refs_dir"/*; do
+            if [ -f "$file" ]; then
+                basename "$file"
+            fi
+        done
+        ;;
+    1)  
+        # If one argument is provided, create a new branch
+        new_branch=$1
+        if [ -e "$refs_dir/$new_branch" ]; then
+            echo "pushy-branch: error: branch '$new_branch' already exists"
+        fi
+
+          cat "$current_branch_ref" >".pushy/refs/heads/$new_branch"
+        ;;
+    *)
+        # If more than one argument is provided, the first one should be option -d
+        delete_branch=$2
+        flag=$1
+        if [ "$flag" != "-d" ]; then
+            echo "usage: pushy-branch [-d] <branchname>"
+            exit 1
+        fi
+
+        #error check
+        if [ "$delete_branch" = "master" ]; then
+            echo "pushy-branch: error: can not delete branch 'master': default branch"
+            exit 1
+        fi
+        if [ ! -e "$refs_dir/$delete_branch" ]; then
+            echo "pushy-branch: error: branch '$delete_branch' doesn't exist"
+            exit 1
+        fi
+
+        if [ "$current_branch" = "$delete_branch" ]; then
+            echo "pushy-branch: error: can not delete branch '$delete_branch': current branch"
+            exit 1
+        fi
+
+        #implement delete
+        rm "$refs_dir/$delete_branch"
+        echo "Deleted branch '$delete_branch'"
+        ;;
+esac
+

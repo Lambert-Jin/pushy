@@ -1,0 +1,17 @@
+#! /bin/dash
+
+pushy_dir=".pushy"
+commits_dir="$pushy_dir/objects/commits"
+
+# Check if the .pushy directory exists.
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+# print the commit num and commit message
+find "$commits_dir" -type f | sort -r | while IFS= read -r file_path; do
+    file_name=$(basename "$file_path")
+    file="$commits_dir/$file_name"
+    echo "$file_name $(tail -n 1 "$file")"
+done

@@ -1,0 +1,157 @@
+#!/bin/dash
+
+pushy_dir=".pushy"
+objects_dir="$pushy_dir/objects"
+commits_dir="$pushy_dir/objects/commits"
+index_file="$pushy_dir/index"
+head_file="$pushy_dir/HEAD"
+refs_dir="$pushy_dir/refs/heads"
+
+#check if the pushy directory does not exist
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+# Determine the current branch by reading the HEAD file
+current_branch=$(sed 's/ref: refs\/heads\///' < "$head_file")
+
+if [ -z "$current_branch" ]; then
+    echo "pushy-checkout: error: this command can not be run until after the first commit"
+else
+    #extract current branch and previous_commit
+    current_branch_ref="$refs_dir/$current_branch"
+    previous_commit_num=$(cat "$current_branch_ref")
+    previous_commit="$commits_dir/$previous_commit_num"
+fi
+
+# Ensure exactly one argument is provided
+if [ "$#" != 1 ]; then
+    echo "usage: pushy-checkout <branch>"
+    exit
+fi
+
+branch=$1
+
+# Check if the requested branch is the same as the current branch
+if [ "$current_branch" = "$branch" ]; then
+    echo "Already on '$branch'"
+fi
+
+# Exit if the requested branch does not exist
+if [ ! -e "$refs_dir/$branch" ]; then
+    echo "pushy-checkout: error: unknown branch '$branch'"
+    exit 1
+fi
+
+#extract the branch name and latest commit in target branch
+new_branch_ref="$refs_dir/$branch"
+new_branch_commit_num=$(cat "$new_branch_ref")
+new_branch_commit="$commits_dir/$new_branch_commit_num"
+
+# Skip further actions if the new branch points to the same commit as the current branch
+if [ "$new_branch_commit_num" = "$previous_commit_num" ]; then
+    echo "ref: refs/heads/$branch" >"$pushy_dir/HEAD"
+    echo "Switched to branch '$branch'"
+    exit 0
+fi
+
+# Temporary files for tracking files that would be overwritten by the checkout and those already visited
+overwritten=$(mktemp)
+trap rm -f "$overwritten" EXIT
+temp_file_visited=$(mktemp)
+trap rm -f "$temp_file_visited" EXIT
+
+# compare the file in current branch and target branch to check if some files would be overwritten
+grep -oE "^file [^ ]+ [0-9a-fA-F]{40}$" "$previous_commit" | while read -r line; do
+
+        file_name=$(echo "$line" | cut -d ' ' -f2)
+
+        file_name_hash=$(echo -n "$file_name" | sha1sum | cut -d ' ' -f1)
+        file_content_hash=$(sha1sum "$file_name" | cut -d ' ' -f1)
+        file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+
+        commit_hash=$(echo "$line" | cut -d ' ' -f3)
+
+        index_hash=$(grep " $file_name$" "$index_file" | cut -d ' ' -f1)
+        echo "$file_name" >> "$temp_file_visited"
+        #if we can find same commit record in target branch that is fine
+        if grep -qE "^file $file_name $commit_hash$" "$new_branch_commit"; then
+            continue
+        else
+            #check if the file in current branch is commited
+            if [ "$index_hash" = "$commit_hash" ]; then
+                continue
+            else
+                #record the files would be overwritten
+                echo "$file_name" >> "$overwritten"
+            fi
+        fi
+    done
+
+# check the file which is not in commit dictionary
+for file in *; do
+    if grep -qxFe "$file" "$temp_file_visited"; then
+        continue
+    fi
+    file_name_hash=$(echo -n "$file" | sha1sum | cut -d ' ' -f1)
+    file_content_hash=$(sha1sum "$file" | cut -d ' ' -f1)
+    file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+
+    if ! grep -qE "^file $file [0-9a-fA-F]{40}$" "$new_branch_commit"; then
+        continue
+    fi
+
+    if grep -qE "^file $file $file_hash$" "$new_branch_commit"; then
+        if ! grep -q " $file_name$" "$index_file"; then
+            echo "$file" >> "$overwritten"
+        fi
+        continue
+    else
+        echo "$file" >> "$overwritten"
+    fi
+
+done
+
+# print the error message for the file would be overwritten
+if [ -s "$overwritten" ]; then
+    echo "pushy-checkout: error: Your changes to the following files would be overwritten by checkout:"
+    while IFS= read -r file_name; do
+        echo "$file_name"
+    done < "$overwritten"
+    exit 1
+fi
+
+# clear working dictionary for checkout
+if [ -s "$current_branch_ref" ] && [ -f "$previous_commit" ]; then
+    grep -oE "^file [^ ]+ [0-9a-fA-F]{40}$" "$previous_commit" | while read -r line; do
+        file_name=$(echo "$line" | cut -d ' ' -f2)
+        if [ -f "$file_name" ]; then 
+            rm "$file_name"
+        fi
+    done
+    rm "$index_file"
+    touch $index_file
+fi
+
+# update the pointer for the current branch
+echo "ref: refs/heads/$branch" >"$pushy_dir/HEAD"
+
+# extract the branch name and latest commit in target branch
+current_branch=$(sed 's/ref: refs\/heads\///' < "$head_file")
+current_branch_ref="$refs_dir/$current_branch"
+previous_commit_num=$(cat "$current_branch_ref")
+previous_commit="$commits_dir/$previous_commit_num"
+
+# update the working dictionary and index for target branch
+if [ -s "$current_branch_ref" ] && [ -f "$previous_commit" ]; then
+    grep -oE "^file [^ ]+ [0-9a-fA-F]{40}$" "$previous_commit" | while read -r line; do
+        file_name=$(echo "$line" | cut -d ' ' -f2)
+        file_hash=$(echo "$line" | cut -d ' ' -f3)
+        touch "$file_name"
+        cp "$objects_dir/$file_hash" "$file_name"
+        echo "$file_hash $file_name" >> "$index_file"
+    done
+fi
+
+echo "Switched to branch '$branch'"

@@ -1,0 +1,133 @@
+#!/bin/dash
+
+pushy_dir=".pushy"
+commits_dir="$pushy_dir/objects/commits"
+index_file="$pushy_dir/index"
+index_file="$pushy_dir/index"
+head_file="$pushy_dir/HEAD"
+refs_dir="$pushy_dir/refs/heads"
+
+# Create a temporary file to hold output and ensure it's deleted on script exit
+tmp_file=$(mktemp)
+trap 'rm -f "$tmp_file"' EXIT
+# Retrieve the current branch name and resolve the current and previous commit references
+current_branch=$(sed 's/ref: refs\/heads\///' < "$head_file")
+if [ -n "$current_branch" ]; then
+    current_branch_ref="$refs_dir/$current_branch"
+    previous_commit_num=$(cat "$current_branch_ref")
+    previous_commit="$commits_dir/$previous_commit_num"
+else
+    for file in *; do
+        if [ -f "$file" ]; then
+            file_name_hash=$(echo -n "$file" | sha1sum | cut -d ' ' -f1)
+            file_content_hash=$(sha1sum "$file" | cut -d ' ' -f1)
+            file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+            if [ ! -f "$index_file" ]; then
+                echo "$file - untracked" >> "$tmp_file"
+                continue
+            fi
+            matched_line=$(grep -E "^[0-9a-fA-F]{40} $file$" "$index_file")
+            if [ -n "$matched_line" ]; then
+                index_hash=$(echo "$matched_line" | cut -d ' ' -f 1)
+                if [ "$file_hash" != "$index_hash" ]; then
+                    echo "$file - added to index, file changed" >> "$tmp_file"
+                else
+                    echo "$file - added to index" >> "$tmp_file"
+                fi
+            else
+                echo "$file - untracked" >> "$tmp_file"
+            fi
+        fi
+    done
+
+    while IFS=' ' read -r file_hash file_name; do
+        if [ ! -f "$file_name" ]; then
+            echo "$file_name - added to index, file deleted" >> "$tmp_file"
+        fi
+    done < "$index_file"
+    sort "$tmp_file" | uniq
+    exit 0
+fi
+
+# Loop through all files in the current directory to check their status against the index and previous commit
+for file in *; do
+    if [ -f "$file" ]; then
+        # Calculate hashes for the file name and content, then combine them for a unique file identifier
+        file_name_hash=$(echo -n "$file" | sha1sum | cut -d ' ' -f1)
+        file_content_hash=$(sha1sum "$file" | cut -d ' ' -f1)
+        file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+
+        # Retrieve the hash of the file as recorded in the index and in the previous commit
+        index_hash=$(grep " $file$" "$index_file" | cut -d ' ' -f1)
+        commit_hash=$(grep -oE "^file $file [0-9a-fA-F]{40}$" "$previous_commit" | cut -d ' ' -f3)
+        #compare the record in working dictionary, index, repo
+        if [ -n "$commit_hash" ]; then
+            if [ -z "$index_hash" ]; then
+                echo "$file - deleted from index" >> "$tmp_file"
+                continue
+            fi
+
+            if [ "$file_hash" != "$index_hash" ]; then
+                if [ "$index_hash" != "$commit_hash" ]; then
+                    echo "$file - file changed, different changes staged for commit" >> "$tmp_file"
+                    continue
+                else
+                    echo "$file - file changed, changes not staged for commit" >> "$tmp_file"
+                    continue
+                fi
+            else
+                if [ "$index_hash" != "$commit_hash" ]; then
+                    echo "$file - file changed, changes staged for commit" >> "$tmp_file"
+                    continue
+                else
+                    echo "$file - same as repo" >> "$tmp_file"
+                    continue
+                fi
+            fi
+        else
+            if [ -z "$index_hash" ]; then
+                echo "$file - untracked" >> "$tmp_file"
+                continue
+            fi
+
+            if [ "$file_hash" != "$index_hash" ]; then
+                echo "$file - added to index, file changed" >> "$tmp_file"
+                continue
+            else
+                echo "$file - added to index" >> "$tmp_file"
+                continue
+            fi
+        fi
+    fi
+done
+
+# for the file in commit repo
+if [ -s "$current_branch_ref" ] && [ -f "$previous_commit" ]; then
+    grep -oE "^file [^ ]+ [0-9a-fA-F]{40}$" "$previous_commit" | while read -r line; do
+        file_name=$(echo "$line" | cut -d ' ' -f2)
+        file_hash=$(echo "$line" | cut -d ' ' -f3)
+        index_hash=$(grep " $file_name$" "$index_file" | cut -d ' ' -f1)
+        if [ ! -f "$file_name" ] && [ -z "$index_hash" ]; then
+            echo "$file_name - file deleted, deleted from index" >> "$tmp_file"
+            continue
+        fi
+       
+        if [ ! -f "$file_name" ]; then
+            echo "$file_name - file deleted" >> "$tmp_file"
+            continue
+        fi
+    done
+fi
+
+# for the file in index
+while IFS=' ' read -r file_hash file_name; do
+    if [ -s "$current_branch_ref" ] && [ -f "$previous_commit" ]; then
+        previous_file_hash=$(grep -m 1 " $file_name" "$previous_commit" | cut -d ' ' -f 3)
+
+        if [ ! -f  "$file_name" ] && [ -z "$previous_file_hash" ]; then
+            echo "$file_name - added to index, file deleted" >> "$tmp_file"
+        fi
+    fi
+done < "$index_file"
+
+sort "$tmp_file" | uniq

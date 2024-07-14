@@ -1,0 +1,44 @@
+#! /bin/dash
+
+pushy_dir=".pushy"
+objects_dir="$pushy_dir/objects"
+commits_dir="$pushy_dir/objects/commits"
+index_file="$pushy_dir/index"
+
+# Capture the first argument passed to the script. Extract each part of argument
+input=$1
+commit_num=$(echo "$input" | cut -d':' -f1)
+file_name=$(echo "$input" | cut -d':' -f2)
+
+# Check if the .pushy directory exists.
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+# If no commit number is specified, search for the file in the index.
+if [ -z "$commit_num" ]; then
+    # Look for the file hash in the index file.
+    file_hash=$(grep " $file_name$" "$index_file" | cut -d' ' -f1)
+    if [ -z "$file_hash" ]; then
+        echo "pushy-show: error: '$file_name' not found in index"
+        exit 0
+    fi
+else
+    # If a commit number is specified, check if the commit file exists.
+    if [ -f "$commits_dir/$commit_num" ]; then
+        file_hash=$(grep "file $file_name " "$commits_dir/$commit_num" | cut -d' ' -f3)
+        if [ -z "$file_hash" ]; then
+            echo "pushy-show: error: '$file_name' not found in commit $commit_num"
+            exit 0
+        fi
+    else
+        # If the commit file does not exist, print an error message
+        echo "pushy-show: error: unknown commit '$commit_num'"
+        exit 0
+    fi
+fi
+
+# Display the content of the file
+cat "$objects_dir/$file_hash"
+exit 0

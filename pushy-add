@@ -1,0 +1,64 @@
+#! /bin/dash
+
+# Define variables for directory and file paths within the .pushy directory
+pushy_dir=".pushy"
+objects_dir="$pushy_dir/objects"
+index_file="$pushy_dir/index"
+commits_dir="$pushy_dir/objects/commits"
+commit_count=""
+
+# Check if the .pushy directory exists, exit with an error if not
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+# Check if any arguments were passed, exit with usage instructions if none
+if [ $# -eq 0 ]; then
+    echo "usage: pushy-add <filenames>"
+    exit 1
+fi
+
+# Create the index file if it does not exist
+if [ ! -f "$index_file" ]; then
+    touch "$index_file"
+fi
+
+# Loop through each argument passed to the script
+for file in "$@"; do
+    # Check if the current argument points to a file
+    if [ ! -f "$file" ]; then
+        commit_count=$(find "$commits_dir" -type f | wc -l)
+        pattern="^[0-9a-fA-F]{40} $file$"
+
+        # If there are no commits or the file is not in the index, print an error and continue
+        if [ "$commit_count" -eq 0 ]; then
+            echo "pushy-add: error: can not open '$file'"
+            continue
+        elif ! grep -qE "$pattern" $index_file; then
+            echo "pushy-add: error: can not open '$file'"
+            continue
+        else
+            # If the file is in the index but not found, remove its entry from the index
+            sed -i "/ $file\$/d" $index_file
+            continue
+        fi
+    fi
+
+    # Generate a hash from the file name and another from the file content, then hash these together
+    file_name_hash=$(echo -n "$file" | sha1sum | cut -d ' ' -f1)
+    file_content_hash=$(sha1sum "$file" | cut -d ' ' -f1)
+    file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+
+    # Copy the file to the objects directory under its hash name
+    cp "$file" "$objects_dir/$file_hash"
+
+    # update index
+    if grep -q " $file$" "$index_file"; then
+        sed -i "/ $file$/c$file_hash $file" "$index_file"
+    else
+        echo "$file_hash $file" >> "$index_file"
+    fi
+done
+
+exit 0

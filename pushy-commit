@@ -1,0 +1,138 @@
+#! /bin/dash
+
+#initialize the variable
+pushy_dir=".pushy"
+objects_dir="$pushy_dir/objects"
+commits_dir="$pushy_dir/objects/commits"
+index_file="$pushy_dir/index"
+head_file="$pushy_dir/HEAD"
+refs_dir="$pushy_dir/refs/heads"
+
+has_updates=0
+auto_add=0  #for the option -a
+commit_msg=""
+
+# Count the number of lines in the index file to check for staged changes
+index_count=$(wc -l < $index_file)
+
+# Check if the pushy repository directory exists; exit with an error if not
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+# Retrieve the current branch name from the HEAD file
+current_branch=$(sed 's/ref: refs\/heads\///' < "$head_file")
+current_branch_ref="$refs_dir/$current_branch"
+
+# Process command-line options (-a for auto-add, -m for commit message)
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -a)
+            auto_add=1
+            shift
+            ;;
+        -m)
+            shift
+            commit_msg="$1"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# If has optin -a, add all updated file in index
+if [ "$auto_add" -eq 1 ]; then
+    while IFS=' ' read -r file_hash file_name; do
+        if [ ! -f "$file_name" ]; then
+            sed -i "/ $file_name\$/d" $index_file
+            continue
+        fi
+        file_name_hash=$(echo -n "$file_name" | sha1sum | cut -d ' ' -f1)
+        file_content_hash=$(sha1sum "$file_name" | cut -d ' ' -f1)
+        file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+        cp "$file_name" "$objects_dir/$file_hash"
+        sed -i "/ $file_name$/c$file_hash $file_name" "$index_file"
+    done < "$index_file"
+fi
+
+# Check if the current branch has a previous commit
+if [ -f "$current_branch_ref" ]; then
+    previous_commit_num=$(cat "$current_branch_ref")
+    parent=$previous_commit_num
+    previous_commit="$commits_dir/$previous_commit_num"
+else
+    parent=-1
+    if [ "$index_count" -ne 0 ]; then 
+        has_updates=1
+    fi
+fi
+
+# Calculate the next commit number based on the number of existing commits
+commit_count=$(find "$commits_dir" -type f | wc -l)
+commit_num=$commit_count
+
+# Check if there are file changes in index compared to the previous commit
+temp_commit_file=$(mktemp)
+trap 'rm -f "$temp_commit_file"' EXIT
+while IFS=' ' read -r file_hash file_name; do
+    if [ -s "$current_branch_ref" ] && [ -f "$previous_commit" ]; then
+        previous_file_hash=$(grep -m 1 " $file_name" "$previous_commit" | cut -d ' ' -f 3)
+        if [ "$file_hash" != "$previous_file_hash" ]; then
+            has_updates=1
+        fi
+    fi
+
+    # Record file information in a temporary commit file
+    echo "file $file_name $file_hash" >> "$temp_commit_file"
+done < "$index_file"
+
+# Check for deleted files by comparing the index file with the previous commit
+tmp_file=$(mktemp)
+trap 'rm -f "$tmp_file"' EXIT
+if [ -s "$current_branch_ref" ] && [ -f "$previous_commit" ]; then
+    grep -oE "^file [^ ]+ [0-9a-fA-F]{40}$" "$previous_commit" | while read -r line; do
+        file_name=$(echo "$line" | cut -d ' ' -f2)
+        if ! grep -q " $file_name$" "$index_file"; then
+            echo "1" > "$tmp_file"
+        fi
+    done
+fi
+
+if [ -s "$tmp_file" ]; then
+    has_updates=$(cat "$tmp_file")
+    rm "$tmp_file"
+fi
+
+# do the commit
+if [ "$has_updates" -eq 0 ]; then
+    echo "nothing to commit"
+    rm "$temp_commit_file"
+    exit 0
+else
+    {
+        echo "$parent"
+        echo "Author: $USER Date: $(date)"
+        echo "Committer: $USER Date: $(date)"
+        echo ""
+        echo "$commit_msg"
+    } >> "$temp_commit_file"
+
+    cat "$temp_commit_file" >> "$commits_dir/$commit_num"
+
+    rm "$temp_commit_file"
+    
+    echo "Committed as commit $commit_num"
+
+    # initialize the HEAD for the first commit
+    if [ -z "$current_branch" ]; then
+        echo "ref: refs/heads/master" > "$pushy_dir/HEAD"
+        echo "$commit_num" > ".pushy/refs/heads/master"
+    else
+        echo "$commit_num" > ".pushy/refs/heads/$current_branch"
+    fi 
+fi
+exit 0

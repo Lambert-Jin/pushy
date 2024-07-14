@@ -1,0 +1,203 @@
+#!/bin/dash
+
+pushy_dir=".pushy"
+commits_dir="$pushy_dir/objects/commits"
+index_file="$pushy_dir/index"
+index_file="$pushy_dir/index"
+head_file="$pushy_dir/HEAD"
+refs_dir="$pushy_dir/refs/heads"
+delete_file=""
+force=0
+cached=0
+to_delete=""
+input="$*"
+
+if [ ! -d "$pushy_dir" ]; then
+    echo "pushy-add: error: pushy repository directory .pushy not found"
+    exit 1
+fi
+
+if ! echo "$input" | grep -E '^((--force|--cached) ?){0,2}([a-zA-Z0-9]+ ?)+$' > /dev/null; then
+    echo "usage: pushy-rm [--force] [--cached] filenames..."
+    exit 1
+fi
+
+current_branch=$(sed 's/ref: refs\/heads\///' < "$head_file")
+current_branch_ref="$refs_dir/$current_branch"
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --force)
+        force=1
+        shift
+        ;;
+    --cached)
+        cached=1
+        shift
+        ;;
+    *)
+        break
+        ;;
+    esac
+done
+
+if [ "$force" -eq 1 ] && [ "$cached" -eq 1 ]; then
+    while [ "$#" -gt 0 ]; do
+        delete_file=$1
+        if ! grep -q " $delete_file$" "$index_file"; then
+            echo "pushy-rm: error: '$delete_file' is not in the pushy repository"
+            exit 1
+        else
+            to_delete="$to_delete$delete_file:"
+            shift
+        fi
+    done
+
+    IFS=':'
+    for file in $to_delete; do
+        if [ -n "$file" ]; then  
+            sed -i "/ $file\$/d" "$index_file"
+        fi
+    done
+    unset IFS
+
+    exit 0
+fi
+
+if [ "$force" -eq 1 ]; then
+    while [ "$#" -gt 0 ]; do
+        delete_file=$1
+        if ! grep -q " $delete_file$" "$index_file"; then
+            echo "pushy-rm: error: '$delete_file' is not in the pushy repository"
+            shift
+            continue
+        fi
+        to_delete="$to_delete$delete_file:"
+        shift
+    done
+
+    IFS=':'
+    for file in $to_delete; do
+        if [ -n "$file" ]; then  
+            sed -i "/ $file\$/d" "$index_file" && rm "$file"
+        fi
+    done
+    unset IFS
+
+    exit 0
+fi
+
+if [ "$cached" -eq 1 ]; then
+    while [ "$#" -gt 0 ]; do
+        delete_file=$1
+        if ! grep -q " $delete_file$" "$index_file"; then
+            echo "pushy-rm: error: '$delete_file' is not in the pushy repository"
+            shift
+            continue
+        else
+            if [ -f "$current_branch_ref" ]; then
+                previous_commit_num=$(cat "$current_branch_ref")
+                previous_commit="$commits_dir/$previous_commit_num"
+
+                file_name_hash=$(echo -n "$delete_file" | sha1sum | cut -d ' ' -f1)
+                file_content_hash=$(sha1sum "$delete_file" | cut -d ' ' -f1)
+
+                file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+                index_hash=$(grep " $delete_file$" "$index_file" | cut -d ' ' -f1)
+                commit_hash=$(grep -oE "^file $delete_file [0-9a-fA-F]{40}$" "$previous_commit" | cut -d ' ' -f3)
+                if [ "$file_hash" != "$index_hash" ] && [ "$index_hash" != "$commit_hash" ]; then
+                    echo "pushy-rm: error: '$delete_file' in index is different to both the working file and the repository"
+                    exit 1
+                fi
+            fi
+            to_delete="$to_delete$delete_file:"
+            shift
+        fi
+    done
+
+    IFS=':'
+    for file in $to_delete; do
+        if [ -n "$file" ]; then  
+            sed -i "/ $file\$/d" "$index_file"
+        fi
+    done
+    unset IFS
+
+    exit 0
+fi
+
+if [ "$force" -eq 0 ] && [ "$cached" -eq 0 ]; then
+    while [ "$#" -gt 0 ]; do
+        delete_file=$1
+
+        if ! grep -q " $delete_file$" "$index_file"; then
+            echo "pushy-rm: error: '$delete_file' is not in the pushy repository"
+            exit 1
+        fi
+
+        if [ ! -f "$delete_file" ]; then
+            to_delete="$to_delete$delete_file:"
+            shift
+            continue
+        fi
+
+
+        if [ -f "$current_branch_ref" ]; then
+            previous_commit_num=$(cat "$current_branch_ref")
+            previous_commit="$commits_dir/$previous_commit_num"
+
+            file_name_hash=$(echo -n "$delete_file" | sha1sum | cut -d ' ' -f1)
+            file_content_hash=$(sha1sum "$delete_file" | cut -d ' ' -f1)
+
+            file_hash=$(echo -n "$file_name_hash$file_content_hash" | sha1sum | cut -d ' ' -f1)
+            index_hash=$(grep " $delete_file$" "$index_file" | cut -d ' ' -f1)
+            commit_hash=$(grep -oE "^file $delete_file [0-9a-fA-F]{40}$" "$previous_commit" | cut -d ' ' -f3)
+            if [ -n "$commit_hash" ]; then
+                if [ "$file_hash" != "$index_hash" ]; then
+                    if [ "$index_hash" != "$commit_hash" ]; then
+                        echo "pushy-rm: error: '$delete_file' in index is different to both the working file and the repository"
+                        exit 1
+                    else
+                        echo "pushy-rm: error: '$delete_file' in the repository is different to the working file"
+                        exit 1
+                    fi
+                else
+                    if [ "$index_hash" != "$commit_hash" ]; then
+                        echo "pushy-rm: error: '$delete_file' has staged changes in the index"
+                        exit 1
+                    else
+                        to_delete="$to_delete$delete_file:"
+                        shift
+                        continue
+                    fi
+                fi
+            else
+                if [ -z "$index_hash" ]; then
+                    to_delete="$to_delete$delete_file:"
+                    shift
+                    continue
+                else
+                    echo "pushy-rm: error: '$delete_file' has staged changes in the index"
+                    exit 1
+                fi
+            fi
+        else
+            echo "pushy-rm: error: '$delete_file' has staged changes in the index"
+            exit 1
+        fi
+
+    done
+
+    IFS=':'
+    for file in $to_delete; do
+        if [ -n "$file" ]; then  
+            sed -i "/ $file\$/d" "$index_file"
+            if [ -f "$file" ]; then 
+                rm "$file"
+            fi
+        fi
+    done
+    unset IFS
+
+    exit 0
+fi
